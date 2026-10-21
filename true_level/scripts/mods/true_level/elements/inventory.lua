@@ -31,9 +31,9 @@ local _separator_indent = function(ui_renderer, prefix, font_type, font_size)
 end
 
 local _wrap_levels = function(ui_renderer, text, font_type, font_size, render_scale, wrap_width)
-    local level_texts = mod.get_level_texts()
+    local level_texts, separator = mod.get_level_texts()
     local count = #level_texts
-    local levels_text = table.concat(level_texts, " ")
+    local levels_text = table.concat(level_texts, separator)
 
     if count == 0 or string.sub(text, -#levels_text) ~= levels_text then
         return text
@@ -44,7 +44,7 @@ local _wrap_levels = function(ui_renderer, text, font_type, font_size, render_sc
     local num_first_row = 0
 
     for i = 1, count do
-        local candidate = first_row .. " " .. level_texts[i]
+        local candidate = first_row .. (i == 1 and " " or separator) .. level_texts[i]
 
         if not _fits_one_row(ui_renderer, candidate, font_type, font_size, render_scale, wrap_width) then
             break
@@ -58,7 +58,7 @@ local _wrap_levels = function(ui_renderer, text, font_type, font_size, render_sc
         return text
     end
 
-    local second_row = table.concat(level_texts, " ", num_first_row + 1, count)
+    local second_row = table.concat(level_texts, separator, num_first_row + 1, count)
 
     return first_row .. "\n" .. _separator_indent(ui_renderer, prefix, font_type, font_size) .. second_row
 end

@@ -63,7 +63,10 @@ mod:hook_safe(CLASS.LobbyView, "_sync_player", function(self, unique_id, player)
 
         if true_levels then
             content.character_name = mod.replace_level(content.character_name, true_levels, ref)
-            slot.tl_levels_text = table.concat(mod.get_level_texts(), " ")
+
+            local level_texts, separator = mod.get_level_texts()
+
+            slot.tl_levels_text = table.concat(level_texts, separator)
             slot.tl_modified = true
         end
     end
