@@ -533,6 +533,7 @@ local RESOLVED_SETTING_IDS = {
     "havoc_assignment_icon",
     "havoc_assignment_color",
     "enable_havoc_assignment_charges",
+    "separator",
 }
 
 local _resolved_settings = {}
@@ -642,42 +643,58 @@ local _init_levels = function()
 end
 
 local level_texts = {}
+local level_separator = " "
 
 local _concat_levels = function(settings)
     local len = #levels
+    local separator = settings.separator
 
     table.clear(level_texts)
+    level_separator = separator
 
     for i = 1, len do
         local level = levels[i]
-        if level.val ~= "" then
-            local symbol = mod.get_symbol(level.symbol_key)
-            local level_text = level.merged and symbol or level.val .. " " .. symbol
-            local color_code = settings[level.color_id]
+        local val = level.val
 
-            if color_code and color_code ~= "default" and Color[color_code]then
-                level_text = _apply_color_to_text(color_code, level_text)
-            end
+        if val ~= "" then
+            local symbol = mod.get_symbol(level.symbol_key)
+            local level_text = nil
 
             if level.merged then
-                level_texts[#level_texts] = level_texts[#level_texts] .. " " .. level_text
+                level_text = symbol
+            elseif symbol ~= "" then
+                level_text = val .. separator .. symbol
             else
-                level_texts[#level_texts + 1] = level_text
+                level_text = tostring(val)
+            end
+
+            if level_text ~= "" then
+                local color_code = settings[level.color_id]
+
+                if color_code and color_code ~= "default" and Color[color_code]then
+                    level_text = _apply_color_to_text(color_code, level_text)
+                end
+
+                if level.merged then
+                    level_texts[#level_texts] = level_texts[#level_texts] .. separator .. level_text
+                else
+                    level_texts[#level_texts + 1] = level_text
+                end
             end
         end
     end
 
-    return table.concat(level_texts, " ")
+    return table.concat(level_texts, separator)
 end
 
 mod.get_level_texts = function()
-    return level_texts
+    return level_texts, level_separator
 end
 
 local _trim_added_levels = function(text)
     -- Color markup can make the appended level suffix start with "{#color...}"
     -- instead of a digit, so strip both plain and colored variants.
-    text = text:gsub("%s+%-%s+%d.+", "")
+    text = text:gsub("%s+%-%s+%d.*", "")
     text = text:gsub("%s+%-%s+{#.-}%d.+", "")
 
     return text
@@ -760,7 +777,7 @@ local _replace_level = function(text, true_levels, reference, need_adding)
             end
 
             if charges_symbol then
-                assignment_text = assignment_text .. " " .. charges_symbol
+                assignment_text = assignment_text .. settings.separator .. charges_symbol
             else
                 levels[4].merged = tonumber(levels[3].val) == assignment.rank
             end
@@ -778,7 +795,7 @@ local _replace_level = function(text, true_levels, reference, need_adding)
 
     if need_adding and levels_text ~= "" then
         text = text .. " - " .. levels_text
-    elseif levels_text == "" or not string.find(text, levels_text, 1, true) then
+    elseif levels_text == "" or not string.find(levels_text, suffix, 1, true) or not string.find(text, levels_text, 1, true) then
         text = text:gsub("%d+" .. suffix, levels_text)
     end
 
