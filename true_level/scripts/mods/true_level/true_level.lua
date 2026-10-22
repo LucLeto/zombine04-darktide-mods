@@ -125,6 +125,7 @@ mod.cache_true_levels = function(self_or_others, character_id, base_data, havoc_
     true_levels.account_id = account_id
     self_or_others[character_id] = true_levels
     mod.debug.dump(true_levels, character_id)
+    mod.debug.timing("xp_ready", character_id)
 end
 
 -- ############################################################
@@ -927,16 +928,19 @@ mod.should_replace = function(ref)
 end
 
 local _wru = nil
-local _wru_resolved = false
 local _wru_setting_ids = {}
+local _wru_was_enabled = nil
 
-mod.is_wru_enabled = function(key)
-    if not _wru_resolved then
+local _get_wru = function()
+    if not _wru then
         _wru = get_mod("who_are_you")
-        _wru_resolved = true
     end
 
-    local wru = _wru
+    return _wru
+end
+
+mod.is_wru_enabled = function(key)
+    local wru = _get_wru()
 
     if not wru or not wru:is_enabled() then
         return false
@@ -952,26 +956,8 @@ mod.is_wru_enabled = function(key)
     return wru:get(setting_id) and true or false
 end
 
--- wru_enabled is optional; per-frame callers resolve it once and pass it in.
-mod.is_ready = function(target, key, wru_enabled)
-    -- Already processed targets never wait, so skip the WhoAreYou lookup.
-    if target.tl_modified then
-        return false
-    end
-
-    if wru_enabled == nil then
-        wru_enabled = mod.is_wru_enabled(key)
-    end
-
-    local is_waiting = false
-
-    if wru_enabled then
-        is_waiting = target.wru_modified and not target.tl_modified
-    else
-        is_waiting = not target.tl_modified
-    end
-
-    return is_waiting
+mod.is_ready = function(target)
+    return not target.tl_modified
 end
 
 mod.clear_cache = function ()
@@ -1101,8 +1087,22 @@ mod.on_setting_changed = function(id)
     mod.desync_all()
 end
 
+mod.update = function()
+    local wru = _get_wru()
+    local wru_enabled = wru and wru:is_enabled() or false
+
+    if wru_enabled ~= _wru_was_enabled then
+        if _wru_was_enabled ~= nil then
+            mod.desync_all()
+        end
+
+        _wru_was_enabled = wru_enabled
+    end
+end
+
 mod.on_enabled = function()
     _publish_havoc_assignment()
+    mod.desync_all()
 end
 
 mod.on_disabled = function()
