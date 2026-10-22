@@ -19,22 +19,31 @@ local ICONS = {
     ps5 = "\xEE\x81\xB1",
     unknown = "\xEE\x81\xAF"
 }
+local ICON_PREFIXES = {}
+
+for _, icon in pairs(ICONS) do
+    ICON_PREFIXES[#ICON_PREFIXES + 1] = icon .. " "
+end
+
+-- seconds between rechecks of names that are cached but may still change
+local REVALIDATE_INTERVAL = 0.5
 
 mod._account_names = mod:persistent_table("account_names")
 mod._queue = mod:persistent_table("queue")
 mod.current_style = mod:get("display_style")
 
+-- bumped whenever a cached name changes, so rendered names get rebuilt
+local _name_revision = 0
+local _revalidate_timer = 0
+
 -- ##############################
 -- Manage Account Names
 -- ##############################
 
+-- checks the name itself; the platform icon may still be unresolved
 mod.is_unknown = function(account_name)
-    if string.match(account_name, ICONS.unknown) then
-        return true
-    end
-
-    for _, icon in pairs(ICONS) do
-        account_name = string.gsub(account_name, icon .. " ", "")
+    for i = 1, #ICON_PREFIXES do
+        account_name = string.gsub(account_name, ICON_PREFIXES[i], "")
     end
 
     return account_name == "N/A" or account_name == "[unknown]"
@@ -58,9 +67,10 @@ mod.account_name = function(id)
     return account_name
 end
 
-mod.set_account_name = function(id, name)
+-- tentative names stay queued so they can be refined later
+mod.set_account_name = function(id, name, is_tentative)
     mod._account_names[id] = name
-    mod._queue[id] = nil
+    mod._queue[id] = is_tentative and id or nil
 end
 
 mod.clear_account_names = function()
@@ -69,18 +79,57 @@ mod.clear_account_names = function()
     end
 end
 
+-- vanilla is still resolving the platform or the platform username
+local _is_tentative = function(player_info)
+    local icon = player_info:platform_icon()
+
+    if not icon or icon == ICONS.unknown then
+        return true
+    end
+
+    local presence_manager = Managers.presence
+    local myself = presence_manager:presence_entry_myself()
+    local platform = player_info:platform()
+
+    if myself and platform == myself:platform() then
+        return presence_manager:get_requested_platform_username(platform, player_info:platform_user_id()) == nil
+    end
+
+    return false
+end
+
 mod.update = function(dt, t)
-    if not table.is_empty(mod._queue) then
-        for account_id, _ in pairs(mod._queue) do
-            local player_info = Managers.data_service.social:get_player_info_by_account_id(account_id)
+    local queue = mod._queue
 
-            if player_info then
-                local account_name = player_info:user_display_name()
-                local character_name = player_info:character_name()
+    if not table.is_empty(queue) then
+        local account_names = mod._account_names
+        local social = Managers.data_service.social
+        local revalidate = false
 
-                if not mod.is_unknown(account_name) then
-                    mod.set_account_name(account_id, account_name)
-                    --mod:echo(character_name .. ": " .. account_name)
+        _revalidate_timer = _revalidate_timer - dt
+
+        if _revalidate_timer <= 0 then
+            _revalidate_timer = REVALIDATE_INTERVAL
+            revalidate = true
+        end
+
+        for account_id, _ in pairs(queue) do
+            local cached_name = account_names[account_id]
+
+            if not cached_name or revalidate then
+                local player_info = social:get_player_info_by_account_id(account_id)
+
+                if player_info then
+                    local account_name = player_info:user_display_name()
+
+                    if not mod.is_unknown(account_name) then
+                        if cached_name and cached_name ~= account_name then
+                            _name_revision = _name_revision + 1
+                        end
+
+                        mod.set_account_name(account_id, account_name, _is_tentative(player_info))
+                        --mod:echo(player_info:character_name() .. ": " .. account_name)
+                    end
                 end
             end
         end
@@ -88,15 +137,22 @@ mod.update = function(dt, t)
 end
 
 -- change cross platform icon to acutual platform icons (experimental)
+-- own and unrecognized platforms are left to vanilla
 
-mod:hook_origin("PresenceEntryImmaterium", "platform_icon", function(self)
+mod:hook("PresenceEntryImmaterium", "platform_icon", function(func, self, in_platform, ...)
     local platform = self._immaterium_entry.platform
 
-    if ICONS[platform] then
-        return ICONS[platform]
+    if platform == "" then
+        platform = in_platform
     end
 
-    return ICONS.unknown -- unknown
+    local icon = platform ~= self._my_own_platform and ICONS[platform]
+
+    if icon then
+        return icon
+    end
+
+    return func(self, in_platform, ...)
 end)
 
 -- ##############################
@@ -210,7 +266,7 @@ mod:hook_safe(CLASS.LobbyView, "_sync_player", function(self, unique_id, player)
     if slot then
         local is_synced = slot.synced
 
-        if is_synced and not is_current_style(slot.wru_style) or not slot.wru_modified then
+        if is_synced and not is_current_style(slot.wru_style) or not slot.wru_modified or slot.wru_revision ~= _name_revision then
             local profile = player:profile()
             local panel_widget = slot.panel_widget
             local panel_content = panel_widget.content
@@ -225,6 +281,7 @@ mod:hook_safe(CLASS.LobbyView, "_sync_player", function(self, unique_id, player)
                 panel_content.character_name = string.format("%s %s", character_level, modified_name)
                 slot.wru_modified = true
                 slot.wru_style = mod.current_style
+                slot.wru_revision = _name_revision
                 slot.tl_modified = false
             end
         end
@@ -314,6 +371,7 @@ mod:hook_safe(CLASS.HudElementWorldMarkers, "_calculate_markers", function(self,
 
     local markers_by_type = self._markers_by_type
     local ref = "nameplate"
+    local name_revision = _name_revision
 
     for marker_type, markers in pairs(markers_by_type) do
         if marker_type:match(ref) and not marker_type:match("companion") then
@@ -325,7 +383,7 @@ mod:hook_safe(CLASS.HudElementWorldMarkers, "_calculate_markers", function(self,
                     return
                 end
 
-                if not is_current_style(marker.wru_style) or not marker.wru_modified then
+                if not is_current_style(marker.wru_style) or not marker.wru_modified or marker.wru_revision ~= name_revision then
                     local player = marker.data
                     local profile = player:profile()
                     local content = marker.widget.content
@@ -405,6 +463,7 @@ mod:hook_safe(CLASS.HudElementWorldMarkers, "_calculate_markers", function(self,
 
                                     marker.wru_modified = true
                                     marker.wru_style = mod.current_style
+                                    marker.wru_revision = name_revision
                                     marker.tl_modified = false
                                 end)
 
@@ -413,6 +472,7 @@ mod:hook_safe(CLASS.HudElementWorldMarkers, "_calculate_markers", function(self,
                         else
                             marker.wru_modified = true
                             marker.wru_style = mod.current_style
+                            marker.wru_revision = name_revision
                             marker.tl_modified = false
                         end
                     end
@@ -438,7 +498,7 @@ local modify_player_panel_name = function(self, dt, t, player)
         container_size[1] = 500
     end
 
-    if not is_current_style(self.wru_style) or not self.wru_modified then
+    if not is_current_style(self.wru_style) or not self.wru_modified or self.wru_revision ~= _name_revision then
         local profile = player:profile()
         local account_id = player:account_id()
         local account_name = mod.account_name(account_id)
@@ -452,6 +512,7 @@ local modify_player_panel_name = function(self, dt, t, player)
             self:_set_player_name(string_symbol .. modified_name, character_level)
             self.wru_modified = true
             self.wru_style = mod.current_style
+            self.wru_revision = _name_revision
             self.tl_modified = false
         end
     end
