@@ -130,8 +130,6 @@ local _update_nameplates = function(self)
     end
 
     if markers_by_id then
-        local wru_enabled = nil
-
         for _, data in pairs(nameplates) do
             local id = data.marker_id
             local marker = markers_by_id[id]
@@ -142,32 +140,25 @@ local _update_nameplates = function(self)
                 local player_deleted = player.__deleted
 
                 if not player_deleted then
-                    if wru_enabled == nil then
-                        wru_enabled = mod.is_wru_enabled(ref)
-                    end
+                    local profile = player:profile()
+                    local character_id = profile and profile.character_id
+                    local true_levels = mod.get_true_levels(character_id)
 
-                    local is_waiting = mod.is_ready(marker, ref, wru_enabled)
+                    if true_levels then
+                        local widget = marker.widget
+                        local content = widget.content
+                        local header_text = content.header_text
+                        local header_style = widget.style.header_text
+                        local text_size = header_style and header_style.size
 
-                    if is_waiting then
-                        local profile = player:profile()
-                        local character_id = profile and profile.character_id
-                        local true_levels = mod.get_true_levels(character_id)
+                        content.header_text = mod.replace_level(header_text, true_levels, ref, true)
+                        marker.tl_modified = true
 
-                        if true_levels then
-                            local widget = marker.widget
-                            local content = widget.content
-                            local header_text = content.header_text
-                            local header_style = widget.style.header_text
-                            local text_size = header_style and header_style.size
-
-                            content.header_text = mod.replace_level(header_text, true_levels, ref, true)
-                            marker.tl_modified = true
-
-                            if text_size then
-                                text_size[1] = math.max(text_size[1], NAMEPLATE_TEXT_WIDTH)
-                            end
-                            mod.debug.echo(content.header_text)
+                        if text_size then
+                            text_size[1] = math.max(text_size[1], NAMEPLATE_TEXT_WIDTH)
                         end
+                        mod.debug.echo(content.header_text)
+                        mod.debug.rendered(marker, character_id, ref)
                     end
                 end
             end

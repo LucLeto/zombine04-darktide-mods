@@ -431,7 +431,6 @@ local _update_team_panels = function(self)
     local salvage_enabled = _salvage_enabled(game_mode)
     local salvage_style = mod._player_salvage_style
     local salvage_color = mod._player_salvage_color
-    local wru_enabled = nil
 
     for i = 1, num_panels do
         local data = player_panels_array[i]
@@ -441,14 +440,7 @@ local _update_team_panels = function(self)
             _sync_level_text(panel)
         end
 
-        -- Resolve WhoAreYou at most once per frame, and only for unmodified panels.
-        if wru_enabled == nil and not panel.tl_modified then
-            wru_enabled = mod.is_wru_enabled(ref)
-        end
-
-        local is_waiting = mod.is_ready(panel, ref, wru_enabled)
-
-        if is_waiting then
+        if mod.is_ready(panel) then
             local player = data.player
             local player_deleted = player.__deleted
 
@@ -473,6 +465,7 @@ local _update_team_panels = function(self)
                         container_size[1] = 500
                     end
 
+                    mod.debug.rendered(panel, character_id, ref)
                 end
             end
         end

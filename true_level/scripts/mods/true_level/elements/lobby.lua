@@ -1,6 +1,9 @@
 local mod = get_mod("true_level")
 local ref = "lobby"
 local NAME_GAP = 40
+local ipairs = ipairs
+local tostring = tostring
+local string_format = string.format
 
 mod:hook_safe(CLASS.LobbyView, "update", function(self)
     if mod.should_replace(ref) then
@@ -14,7 +17,7 @@ mod:hook_safe(CLASS.LobbyView, "update", function(self)
                 local character_name =  profile.name or ""
                 local character_level = tostring(profile.current_level) .. " " .. mod.get_symbol()
 
-                content.character_name = string.format("%s %s", character_level, character_name)
+                content.character_name = string_format("%s %s", character_level, character_name)
                 slot.wru_modified = false
                 slot.tl_modified = false
             end
@@ -23,6 +26,12 @@ mod:hook_safe(CLASS.LobbyView, "update", function(self)
         self:_sync_players()
         mod.synced(ref)
     end
+end)
+
+mod:hook_safe(CLASS.LobbyView, "_reset_spawn_slot", function(self, slot)
+    slot.tl_modified = false
+    slot.tl_character_id = nil
+    slot.tl_levels_text = nil
 end)
 
 local _name_max_width = function(self)
@@ -55,8 +64,16 @@ mod:hook_safe(CLASS.LobbyView, "_sync_player", function(self, unique_id, player)
 
     local panel_widget = slot.panel_widget
     local content = panel_widget.content
+    local slot_profile = slot.profile
+    local slot_character_id = slot_profile and slot_profile.character_id
 
-    if mod.is_ready(slot, ref) then
+    if slot.tl_character_id ~= slot_character_id then
+        slot.tl_character_id = slot_character_id
+        slot.tl_modified = false
+        slot.tl_levels_text = nil
+    end
+
+    if mod.is_ready(slot) then
         local profile = player:profile()
         local character_id = profile and profile.character_id
         local true_levels = mod.get_true_levels(character_id)
@@ -68,6 +85,7 @@ mod:hook_safe(CLASS.LobbyView, "_sync_player", function(self, unique_id, player)
 
             slot.tl_levels_text = table.concat(level_texts, separator)
             slot.tl_modified = true
+            mod.debug.rendered(slot, character_id, ref)
         end
     end
 
