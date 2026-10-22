@@ -9,6 +9,10 @@ local option_tables = {
         { text = "player_salvage_style_icon", value = "icon" },
         { text = "off", value = "off" },
     },
+    nameplate_display_location = {
+        { text = "nameplate_display_location_everywhere", value = "everywhere" },
+        { text = "nameplate_display_location_mourningstar_only", value = "mourningstar_only" },
+    },
     separator = {
         { text = "separator_space", value = " " },
         { text = "separator_dot", value = "." },
@@ -321,6 +325,15 @@ for i, ele in ipairs(mod._elements) do
                         options = table.clone(option_tables.color),
                     }
                 }
+            },
+        })
+    elseif ele == "nameplate" then
+        table.append(widgets[#widgets].sub_widgets, {
+            {
+                setting_id = "nameplate_display_location",
+                type = "dropdown",
+                default_value = "everywhere",
+                options = table.clone(option_tables.nameplate_display_location),
             },
         })
     end
