@@ -128,6 +128,32 @@ mod.cache_true_levels = function(self_or_others, character_id, base_data, havoc_
     mod.debug.timing("xp_ready", character_id)
 end
 
+mod.cache_havoc_rank = function(self_or_others, character_id, havoc_rank_cadence_high)
+    if not havoc_rank_cadence_high then
+        return false
+    end
+
+    local true_levels = self_or_others[character_id]
+
+    if not true_levels then
+        local args = mod._queue[character_id]
+
+        if args and args[1] == self_or_others then
+            args[4] = havoc_rank_cadence_high
+        end
+
+        return false
+    end
+
+    if not true_levels.true_level or true_levels.havoc_rank == havoc_rank_cadence_high then
+        return false
+    end
+
+    true_levels.havoc_rank = havoc_rank_cadence_high
+
+    return true
+end
+
 -- ############################################################
 -- Havoc Assignment
 -- ############################################################
