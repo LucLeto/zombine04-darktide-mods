@@ -15,6 +15,10 @@ local _get_markers_by_id = function()
     return markers_by_id
 end
 
+local _is_display_location = function()
+    return mod._nameplate_display_location ~= "mourningstar_only" or mod._is_in_hub
+end
+
 local function _create_character_text(marker)
     local player = marker.data
     local player_manager = Managers.player
@@ -46,6 +50,10 @@ local function _create_character_text(marker)
 end
 
 mod:hook_safe(CLASS.HudElementWorldMarkers, "event_add_world_marker_unit", function(self, marker_type, unit, callback, data)
+    if not _is_display_location() then
+        return
+    end
+
     if marker_type:match("nameplate") and not marker_type:match("companion") then
         local markers = self._markers_by_type[marker_type]
         local len = #markers
@@ -105,6 +113,10 @@ local _update_nameplates = function(self)
 
         mod.synced(ref)
 
+        return
+    end
+
+    if not _is_display_location() then
         return
     end
 

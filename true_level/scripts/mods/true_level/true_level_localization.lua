@@ -93,6 +93,18 @@ local loc = {
         ["zh-tw"] = "玩家回收物顏色",
         ru = "Цвет утиля игрока",
     },
+    nameplate_display_location = {
+        en = "Nameplate Display Location",
+        ja = "ネームプレートの表示場所",
+    },
+    nameplate_display_location_everywhere = {
+        en = "Everywhere",
+        ja = "すべての場所",
+    },
+    nameplate_display_location_mourningstar_only = {
+        en = "Mourningstar Only",
+        ja = "モーニングスターのみ",
+    },
     global = {
         en = "Global",
         ja = "グローバル",

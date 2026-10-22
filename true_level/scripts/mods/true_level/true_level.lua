@@ -567,6 +567,7 @@ local _refresh_settings = function()
 
     mod._player_salvage_style = mod:get("player_salvage_style")
     mod._player_salvage_color = mod:get("player_salvage_color")
+    mod._nameplate_display_location = mod:get("nameplate_display_location")
 end
 
 _refresh_settings()
