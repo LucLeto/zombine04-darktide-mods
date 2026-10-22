@@ -605,12 +605,7 @@ end)
 
 -- Inventory
 
-mod:hook_safe(CLASS.InventoryBackgroundView, "_fetch_character_progression", function(self, player)
-    if not _enabled.inventory then
-        return
-    end
-
-    local widget = self._widgets_by_name.character_name
+local _modify_inventory_name = function(widget, player)
     local account_id = player:account_id()
     local account_name = mod.account_name(account_id)
 
@@ -620,6 +615,38 @@ mod:hook_safe(CLASS.InventoryBackgroundView, "_fetch_character_progression", fun
         local modified_name = modify_character_name(character_name, account_name, account_id, ref)
 
         widget.content.text = modified_name
+        widget.wru_modified = true
+        widget.wru_style = mod.current_style
+        widget.wru_revision = _name_revision
+    end
+end
+
+mod:hook_safe(CLASS.InventoryBackgroundView, "_set_player_profile_information", function(self, player)
+    if not _enabled.inventory then
+        return
+    end
+
+    local widget = self._widgets_by_name.character_name
+
+    widget.wru_modified = false
+    _modify_inventory_name(widget, player)
+end)
+
+mod:hook_safe(CLASS.InventoryBackgroundView, "update", function(self)
+    if not _enabled.inventory or not self._presentation_profile then
+        return
+    end
+
+    local widget = self._widgets_by_name.character_name
+
+    if widget.wru_modified and widget.wru_style == mod.current_style and widget.wru_revision == _name_revision then
+        return
+    end
+
+    local player = self._preview_player
+
+    if player and not player.__deleted then
+        _modify_inventory_name(widget, player)
     end
 end)
 
