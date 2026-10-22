@@ -12,7 +12,8 @@ local NumericUI = get_mod("NumericUI")
 local ProfileUtils = require("scripts/utilities/profile_utils")
 local TextUtils = require("scripts/utilities/ui/text")
 local UISettings = require("scripts/settings/ui/ui_settings")
-local next = next
+local math_huge = math.huge
+local math_min = math.min
 local pairs = pairs
 local string_find = string.find
 local string_format = string.format
@@ -38,8 +39,20 @@ for i = 1, NUM_ICONS do
     ICON_PREFIXES[i] = ICON_GLYPHS[i] .. " "
 end
 
--- seconds between rechecks of names that are cached but may still change
-local REVALIDATE_INTERVAL = 0.5
+-- resolution state of an account name
+local STATE_UNRESOLVED = "unresolved" -- no usable name yet
+local STATE_TENTATIVE = "tentative" -- usable, but the platform or platform username may still change it
+local STATE_RESOLVED = "resolved"
+
+-- seconds between lookups of a queued account, doubled after each lookup up to the max
+local UNRESOLVED_RETRY_DELAY = 0.1
+local UNRESOLVED_MAX_RETRY_DELAY = 0.5
+local TENTATIVE_RETRY_DELAY = 0.5
+local TENTATIVE_MAX_RETRY_DELAY = 4
+-- unresolved accounts are dropped once nothing has asked for them for this long
+local UNRESOLVED_EXPIRY = 10
+-- tentative names are refined for this long, and rest at least as long before being refined again
+local TENTATIVE_EXPIRY = 30
 
 -- ref -> "enable_<ref>" setting id, e.g. nameplate -> enable_nameplate
 local ENABLE_SETTING_IDS = {}
@@ -51,7 +64,14 @@ for i = 1, #mod.modified_elements do
 end
 
 mod._account_names = mod:persistent_table("account_names")
-mod._queue = mod:persistent_table("queue")
+
+-- id -> resolution record of every account that was looked up
+local _resolutions = {}
+-- id -> resolution record of the accounts that are still being looked up
+local _queue = {}
+
+mod._resolutions = _resolutions
+mod._queue = _queue
 
 -- settings read every frame are cached here instead of calling mod:get
 local _enabled = {}
@@ -68,11 +88,59 @@ _refresh_settings()
 
 -- bumped whenever a cached name changes, so rendered names get rebuilt
 local _name_revision = 0
-local _revalidate_timer = 0
+-- seconds summed from update's dt (DMF passes no t)
+local _clock = 0
+-- earliest next_check in the queue
+local _next_check = math_huge
 
 -- ##############################
 -- Manage Account Names
 -- ##############################
+
+local _get_record = function(id)
+    local record = _resolutions[id]
+
+    if not record then
+        record = {
+            state = STATE_UNRESOLVED,
+            next_check = 0,
+            retry_delay = UNRESOLVED_RETRY_DELAY,
+            expires_at = 0,
+            rest_until = 0,
+            -- measurements for tuning the delays, see debug_who_are_you
+            requested_at = _clock,
+            checks = 0,
+        }
+        _resolutions[id] = record
+    end
+
+    return record
+end
+
+local _schedule = function(record, delay)
+    local next_check = _clock + delay
+
+    record.next_check = next_check
+
+    if next_check < _next_check then
+        _next_check = next_check
+    end
+end
+
+-- (re)starts looking up an account from the shortest retry delay
+local _enqueue = function(id, record, state)
+    local is_tentative = state == STATE_TENTATIVE
+
+    record.state = state
+    record.retry_delay = is_tentative and TENTATIVE_RETRY_DELAY or UNRESOLVED_RETRY_DELAY
+    record.expires_at = _clock + (is_tentative and TENTATIVE_EXPIRY or UNRESOLVED_EXPIRY)
+    _queue[id] = record
+end
+
+local _clear_queue = function()
+    table.clear(_queue)
+    _next_check = math_huge
+end
 
 -- checks the name itself; the platform icon may still be unresolved
 mod.is_unknown = function(account_name)
@@ -91,11 +159,28 @@ mod.account_name = function(id)
     local account_name = mod._account_names[id]
 
     if account_name then
+        local record = _resolutions[id]
+
+        -- a tentative name that is shown again after resting gets refined again
+        if record and record.state == STATE_TENTATIVE and not _queue[id] and _clock >= record.rest_until then
+            _enqueue(id, record, STATE_TENTATIVE)
+            _schedule(record, 0)
+        end
+
         if mod:get("hide_identifier_tag") then
             account_name = account_name:gsub("#%d+$", "")
         end
     else
-        mod._queue[id] = id
+        local record = _queue[id]
+
+        if record then
+            -- still asked for, so it stays queued
+            record.expires_at = _clock + UNRESOLVED_EXPIRY
+        else
+            record = _get_record(id)
+            _enqueue(id, record, STATE_UNRESOLVED)
+            _schedule(record, 0)
+        end
     end
 
     return account_name
@@ -103,14 +188,34 @@ end
 
 -- tentative names stay queued so they can be refined later
 mod.set_account_name = function(id, name, is_tentative)
+    local record = _get_record(id)
+
     mod._account_names[id] = name
-    mod._queue[id] = is_tentative and id or nil
+
+    if not record.cached_at then
+        record.cached_at = _clock
+        record.first_name_after = _clock - record.requested_at
+    end
+
+    if is_tentative then
+        if record.state ~= STATE_TENTATIVE then
+            _enqueue(id, record, STATE_TENTATIVE)
+            _schedule(record, record.retry_delay)
+        end
+    else
+        record.state = STATE_RESOLVED
+        record.final_name_after = _clock - record.requested_at
+        _queue[id] = nil
+    end
 end
 
 mod.clear_account_names = function()
     for id, _ in pairs(mod._account_names) do
         mod._account_names[id] = nil
     end
+
+    table.clear(_resolutions)
+    _clear_queue()
 end
 
 -- vanilla is still resolving the platform or the platform username
@@ -122,6 +227,11 @@ local _is_tentative = function(player_info)
     end
 
     local presence_manager = Managers.presence
+
+    if not presence_manager then
+        return true
+    end
+
     local myself = presence_manager:presence_entry_myself()
     local platform = player_info:platform()
 
@@ -132,42 +242,74 @@ local _is_tentative = function(player_info)
     return false
 end
 
-mod.update = function(dt, t)
-    local queue = mod._queue
+local _resolve = function(account_id, record, social)
+    record.checks = record.checks + 1
 
-    if next(queue) ~= nil then
-        local account_names = mod._account_names
-        local social = Managers.data_service.social
-        local revalidate = false
+    local player_info = social:get_player_info_by_account_id(account_id)
 
-        _revalidate_timer = _revalidate_timer - dt
+    if player_info then
+        local account_name = player_info:user_display_name()
 
-        if _revalidate_timer <= 0 then
-            _revalidate_timer = REVALIDATE_INTERVAL
-            revalidate = true
+        if not mod.is_unknown(account_name) then
+            local cached_name = mod._account_names[account_id]
+
+            if cached_name and cached_name ~= account_name then
+                _name_revision = _name_revision + 1
+            end
+
+            mod.set_account_name(account_id, account_name, _is_tentative(player_info))
+            --mod:echo(player_info:character_name() .. ": " .. account_name)
         end
+    end
+end
 
-        for account_id, _ in pairs(queue) do
-            local cached_name = account_names[account_id]
+-- only accounts whose retry is due are looked up, so idle frames cost a single compare
+mod.update = function(dt)
+    local clock = _clock + dt
 
-            if not cached_name or revalidate then
-                local player_info = social:get_player_info_by_account_id(account_id)
+    _clock = clock
 
-                if player_info then
-                    local account_name = player_info:user_display_name()
+    if clock < _next_check then
+        return
+    end
 
-                    if not mod.is_unknown(account_name) then
-                        if cached_name and cached_name ~= account_name then
-                            _name_revision = _name_revision + 1
-                        end
+    local data_service = Managers.data_service
+    local social = data_service and data_service.social
 
-                        mod.set_account_name(account_id, account_name, _is_tentative(player_info))
-                        --mod:echo(player_info:character_name() .. ": " .. account_name)
-                    end
+    if not social then
+        return
+    end
+
+    local queue = _queue
+    local next_check = math_huge
+
+    for account_id, record in pairs(queue) do
+        local record_next_check = record.next_check
+
+        if record_next_check <= clock then
+            if clock >= record.expires_at then
+                queue[account_id] = nil
+                record.rest_until = clock + TENTATIVE_EXPIRY
+            else
+                _resolve(account_id, record, social)
+
+                if queue[account_id] then
+                    local retry_delay = record.retry_delay
+                    local max_retry_delay = record.state == STATE_TENTATIVE and TENTATIVE_MAX_RETRY_DELAY or UNRESOLVED_MAX_RETRY_DELAY
+
+                    record_next_check = clock + retry_delay
+                    record.next_check = record_next_check
+                    record.retry_delay = math_min(retry_delay * 2, max_retry_delay)
                 end
             end
         end
+
+        if queue[account_id] and record_next_check < next_check then
+            next_check = record_next_check
+        end
     end
+
+    _next_check = next_check
 end
 
 -- change cross platform icon to acutual platform icons (experimental)
@@ -187,6 +329,30 @@ mod:hook("PresenceEntryImmaterium", "platform_icon", function(func, self, in_pla
     end
 
     return func(self, in_platform, ...)
+end)
+
+-- a presence update brings the account name and requests the platform username,
+-- so a pending account is looked up right away instead of waiting for its retry
+
+mod:hook_safe("PresenceEntryImmaterium", "update_with", function(self, new_entry)
+    local account_id = new_entry.account_id
+    local record = account_id and _resolutions[account_id]
+
+    if not record then
+        return
+    end
+
+    local state = record.state
+
+    if state == STATE_TENTATIVE then
+        _enqueue(account_id, record, state)
+    elseif state == STATE_UNRESOLVED and _queue[account_id] then
+        record.retry_delay = UNRESOLVED_RETRY_DELAY
+    else
+        return
+    end
+
+    _schedule(record, 0)
 end)
 
 -- ##############################
@@ -854,8 +1020,17 @@ mod.on_game_state_changed = function(status, state_name)
             Managers.presence:get_presence(account_id)
         end
 
+        -- the next session asks again for the names it shows
+        _clear_queue()
+
         if mod.is_in_hub then
             mod.clear_account_names()
         end
     end
 end
+
+-- cache age = clock - cached_at
+mod:command("debug_who_are_you", "", function()
+    mod:info(string_format("clock: %.2f", _clock))
+    mod:dump(_resolutions, "resolutions", 2)
+end)
