@@ -101,32 +101,37 @@ mod:hook_safe(CLASS.InventoryBackgroundView, "init", function(self)
 end)
 
 mod:hook_safe(CLASS.InventoryBackgroundView, "update", function(self)
-    if not mod.should_replace(ref) then
+    if not mod.is_enabled_feature(ref) then
         return
     end
 
     local player = self._preview_player
     local profile = self._presentation_profile
 
-    if player and profile then
-        local character_id = profile.character_id
-        local true_levels = mod.get_true_levels(character_id)
+    if not player or player.__deleted or not profile then
+        return
+    end
 
-        if true_levels then
-            local widget = self._widgets_by_name.character_name
-            local content = widget.content
-            local character_name = content.text
-            local base_name = character_name
+    local widget = self._widgets_by_name.character_name
+    local content = widget.content
+    local character_name = content.text
+    local character_id = profile.character_id
+    local is_current = widget.tl_character_id == character_id and widget.tl_name_text == character_name
 
-            if widget.tl_name_base_text and widget.tl_name_text == character_name then
-                base_name = widget.tl_name_base_text
-            end
+    if is_current and not mod.should_replace(ref) then
+        return
+    end
 
-            content.text = mod.replace_level(base_name, true_levels, ref, true)
-            _fit_character_name(self, widget)
-            widget.tl_name_base_text = base_name
-            widget.tl_name_text = content.text
-            mod.synced(ref)
-        end
+    local true_levels = mod.get_true_levels(character_id)
+
+    if true_levels then
+        local base_name = is_current and widget.tl_name_base_text or character_name
+
+        content.text = mod.replace_level(base_name, true_levels, ref, true)
+        _fit_character_name(self, widget)
+        widget.tl_character_id = character_id
+        widget.tl_name_base_text = base_name
+        widget.tl_name_text = content.text
+        mod.synced(ref)
     end
 end)
