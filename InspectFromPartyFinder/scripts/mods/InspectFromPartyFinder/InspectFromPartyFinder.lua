@@ -2,9 +2,9 @@ local mod = get_mod("InspectFromPartyFinder")
 
 mod._info = {
     title = "Inspect from Party Finder",
-    author = "Zombine",
+    author = "Zombine & LucLeto",
     date = "2025/12/07",
-    version = "1.0.4"
+    version = "1.0.5"
 }
 mod:info("Version " .. mod._info.version)
 
