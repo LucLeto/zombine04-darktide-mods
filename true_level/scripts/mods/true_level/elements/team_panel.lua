@@ -340,6 +340,48 @@ end
 mod:hook_safe(CLASS.HudElementPersonalPlayerPanel, "update", _toggle_vanilla_features)
 mod:hook_safe(CLASS.HudElementTeamPlayerPanel, "update", _toggle_vanilla_features)
 
+local _reset_player_name = function(panel)
+    panel._current_player_name = nil
+    panel.tl_modified = false
+    panel.tl_level_text = nil
+    panel.tl_level_base_text = nil
+    panel.wru_modified = false
+end
+
+local _refresh_player_name_prefix = function(func, self, player)
+    if not player or player.__deleted or not mod.is_enabled_feature(ref) then
+        return func(self, player)
+    end
+
+    local profile = player:profile()
+    local archetype = profile and profile.archetype
+    local character_id = profile and profile.character_id
+    local archetype_name = archetype and archetype.name
+    local player_slot = player.slot and player:slot()
+    local previous_prefix = self._player_name_prefix
+    local identity_changed = not self.tl_prefix_initialized or character_id ~= self.tl_prefix_character_id
+        or archetype_name ~= self.tl_prefix_archetype_name or player_slot ~= self.tl_prefix_slot
+
+    if identity_changed then
+        self.tl_prefix_initialized = true
+        self.tl_prefix_character_id = character_id
+        self.tl_prefix_archetype_name = archetype_name
+        self.tl_prefix_slot = player_slot
+        self._player_name_prefix = nil
+    end
+
+    func(self, player)
+
+    if identity_changed or self._player_name_prefix ~= previous_prefix then
+        _reset_player_name(self)
+    end
+end
+
+mod:hook(CLASS.HudElementPersonalPlayerPanel, "_update_player_name_prefix", _refresh_player_name_prefix)
+mod:hook(CLASS.HudElementPersonalPlayerPanelHub, "_update_player_name_prefix", _refresh_player_name_prefix)
+mod:hook(CLASS.HudElementTeamPlayerPanel, "_update_player_name_prefix", _refresh_player_name_prefix)
+mod:hook(CLASS.HudElementTeamPlayerPanelHub, "_update_player_name_prefix", _refresh_player_name_prefix)
+
 -- hub
 
 local _progression_promises = {}
@@ -458,6 +500,7 @@ local _update_team_panels = function(self)
             panel.tl_level_text = nil
             panel.tl_level_base_text = nil
             panel.wru_modified = false
+            panel.tl_prefix_initialized = false
         end
 
         mod.synced(ref)
