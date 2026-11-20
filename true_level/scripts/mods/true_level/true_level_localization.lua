@@ -10,6 +10,7 @@ mod._elements = {
     "team_panel",
     "social_menu",
     "group_finder",
+    "party_invite",
 }
 
 mod._styles = {
@@ -382,6 +383,9 @@ local loc = {
     },
     group_finder = {
         en = Localize("loc_group_finder_menu_title")
+    },
+    party_invite = {
+        en = Localize("loc_social_party_invite_received_header"),
     },
     debug_mode = {
         en = "Debug",
