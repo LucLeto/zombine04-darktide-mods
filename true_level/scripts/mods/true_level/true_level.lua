@@ -707,6 +707,8 @@ end
 _refresh_settings()
 
 local string_find = string.find
+local string_gsub = string.gsub
+local string_match = string.match
 local string_sub = string.sub
 
 -- Returns the next non-empty line starting at init, and the position after it.
@@ -835,6 +837,43 @@ local _trim_added_levels = function(text)
     return text
 end
 
+local NAME_AND_LEVEL_FORMAT = "loc_social_menu_character_name_format"
+local NAME_AND_LEVEL_SAMPLE = {
+    character_level = "\1",
+    character_name = "\2",
+}
+local LEVEL_FIRST_PATTERN = "^%d+ " .. mod._symbols.level
+
+local _localized_level_pattern = nil
+
+local _resolve_localized_level_pattern = function()
+    local sample = Localize(NAME_AND_LEVEL_FORMAT, true, NAME_AND_LEVEL_SAMPLE)
+
+    if sample == "" then
+        return nil
+    end
+
+    local name_start, name_end = string_find(sample, "\2", 1, true)
+
+    if not name_start then
+        return false
+    end
+
+    local before = string_sub(sample, 1, name_start - 1)
+    local level_first = string_find(before, "\1", 1, true) ~= nil
+    local token = level_first and string_match(before, "^(.-)%s*$") or string_match(string_sub(sample, name_end + 1), "^%s*(.*)$")
+
+    if not string_find(token, "\1", 1, true) then
+        return false
+    end
+
+    local pattern = string_gsub((string_gsub(token, "[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0")), "\1", "%%d+")
+
+    pattern = level_first and "^" .. pattern or pattern .. "$"
+
+    return pattern ~= LEVEL_FIRST_PATTERN and pattern
+end
+
 local _replace_level = function(text, true_levels, reference, need_adding)
     _init_levels()
 
@@ -927,9 +966,19 @@ local _replace_level = function(text, true_levels, reference, need_adding)
     end
 
     local levels_text = _concat_levels(settings)
+    local localized_pattern = _localized_level_pattern
+
+    if localized_pattern == nil then
+        localized_pattern = _resolve_localized_level_pattern()
+        _localized_level_pattern = localized_pattern
+    end
 
     if need_adding and levels_text ~= "" then
         text = text .. " - " .. levels_text
+    elseif localized_pattern and not need_adding and not string_find(text, LEVEL_FIRST_PATTERN) and string_find(text, localized_pattern) then
+        if levels_text == "" or not string_find(levels_text, level_icon, 1, true) or not string_find(text, levels_text, 1, true) then
+            text = string_gsub(text, localized_pattern, levels_text)
+        end
     elseif levels_text == "" or not string.find(levels_text, suffix, 1, true) or not string.find(text, levels_text, 1, true) then
         text = text:gsub("%d+" .. suffix, levels_text)
     end
