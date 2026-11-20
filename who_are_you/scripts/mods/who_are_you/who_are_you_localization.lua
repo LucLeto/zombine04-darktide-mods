@@ -9,6 +9,7 @@ mod.modified_elements = {
     "_inspect_player",
     "_team_panel",
     "_group_finder",
+    "_party_invite",
 }
 
 mod.sub_name_options = {
@@ -202,6 +203,9 @@ local loc = {
     },
     enable_group_finder = {
         en = Localize("loc_group_finder_menu_title")
+    },
+    enable_party_invite = {
+        en = "Strike Team invitations",
     },
     sub_name_settings = {
         en = "Sub name settings",
