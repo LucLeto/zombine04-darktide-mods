@@ -75,6 +75,8 @@ mod._queue = _queue
 
 -- settings read every frame are cached here instead of calling mod:get
 local _enabled = {}
+-- bumped whenever a setting changes, so names built from uncached settings get rebuilt
+local _settings_revision = 0
 
 local _refresh_settings = function()
     mod.current_style = mod:get("display_style")
@@ -82,6 +84,8 @@ local _refresh_settings = function()
     for ref, setting_id in pairs(ENABLE_SETTING_IDS) do
         _enabled[ref] = mod:get(setting_id)
     end
+
+    _settings_revision = _settings_revision + 1
 end
 
 _refresh_settings()
@@ -1000,6 +1004,324 @@ mod:hook_safe(CLASS.GroupFinderView, "_populate_preview_grid", function(self)
     end
 end)
 
+-- Strike Team Invitation
+
+local INVITE_TITLE = "loc_social_party_invite_received_header"
+local INVITE_DESCRIPTION = "loc_social_party_invite_received_description"
+local NAME_AND_LEVEL_FORMAT = "loc_social_menu_character_name_format"
+local GROUP_FINDER_ACCOUNT_ID = "00000000-0000-0000-0000-000000000000"
+
+-- reused by every name-and-level format, Localize reads it right away
+local _name_and_level_params = {
+    character_level = 0,
+    character_name = "",
+}
+
+-- invitation context (popup.data) -> what its player_name is built from
+-- bindings hold no reference to their popup or context, so the weak keys can be collected
+local _invite_bindings = setmetatable({}, { __mode = "k" })
+
+-- vanilla's player_name: name and level when the presence has a level, else the bare name
+local _format_name_and_level = function(name, level)
+    if not level then
+        return name
+    end
+
+    local params = _name_and_level_params
+
+    params.character_level = level
+    params.character_name = name
+
+    return Localize(NAME_AND_LEVEL_FORMAT, true, params)
+end
+
+-- an attempt ends in its popup, its in-mission notification or its rejected join permission
+local _finish_invite_attempt = function(attempts, party_id)
+    local attempt = attempts and attempts[party_id]
+
+    if not attempt then
+        return nil
+    end
+
+    local outstanding = attempt.outstanding - 1
+
+    attempt.outstanding = outstanding
+
+    if outstanding <= 0 then
+        attempts[party_id] = nil
+    end
+
+    return attempt
+end
+
+-- the popup is still the one vanilla shows for its party
+local _is_invite_mapped = function(binding)
+    local party_manager = Managers.party_immaterium
+    local invite_popups = party_manager and party_manager._invite_popups
+
+    return invite_popups ~= nil and invite_popups[binding.party_id] == binding.popup_id
+end
+
+local _prune_invite_bindings = function()
+    for data, binding in pairs(_invite_bindings) do
+        if not _is_invite_mapped(binding) then
+            _invite_bindings[data] = nil
+        end
+    end
+end
+
+-- always built from the raw snapshot, so suffixes never stack and account_only keeps the level
+local _build_invite_name = function(binding)
+    binding.settings_revision = _settings_revision
+    binding.name_revision = _name_revision
+    binding.has_account_name = false
+
+    if not _enabled.party_invite then
+        return binding.base_name
+    end
+
+    local account_id = binding.account_id
+    local account_name = mod.account_name(account_id)
+
+    if not account_name then
+        return binding.base_name
+    end
+
+    binding.has_account_name = true
+
+    return _format_name_and_level(modify_character_name(binding.character_name, account_name, account_id, "party_invite"), binding.character_level)
+end
+
+-- only the enter animation sizes the window, so a changed description gets the size of that animation's last frame
+local _refresh_invite_description = function(handler, data, ui_renderer)
+    handler:_set_description_text(Localize(data.description_text, true, data.description_text_params))
+
+    local popup_height = handler:_update_popup_text_height(ui_renderer)
+    local widgets_by_name = handler._widgets_by_name
+    local background_style = widgets_by_name.popup_background.style
+    local texture_style = background_style.texture
+    local background_height = texture_style.size[2]
+    local background_limit = math_min(popup_height, background_height)
+    local uvs = texture_style.uvs
+
+    texture_style.size_addition[2] = background_limit - background_height
+    uvs[1][2] = 0
+    uvs[2][2] = background_limit / background_height
+    -- 26: what the animation adds to the terminal background
+    background_style.terminal.size_addition[2] = popup_height + 26
+    widgets_by_name.edge_bottom.offset[2] = popup_height * 0.5
+    widgets_by_name.edge_top.offset[2] = -popup_height * 0.5
+
+    handler:_force_update_scenegraph()
+end
+
+-- recorded before vanilla runs, since an already resolved presence shows the popup right away
+mod:hook(CLASS.PartyImmateriumManager, "_handle_immaterium_invite", function(func, self, party_id, invite_token, inviter_account_id)
+    if party_id and inviter_account_id and inviter_account_id ~= GROUP_FINDER_ACCOUNT_ID then
+        local attempts = self.wru_invite_attempts
+
+        if not attempts then
+            attempts = {}
+            self.wru_invite_attempts = attempts
+        end
+
+        local attempt = attempts[party_id]
+
+        if attempt then
+            attempt.outstanding = attempt.outstanding + 1
+
+            -- popups of one party carry no inviter, so pending inviters can't be told apart
+            if attempt.account_id ~= inviter_account_id then
+                attempt.ambiguous = true
+            end
+        else
+            attempts[party_id] = {
+                account_id = inviter_account_id,
+                outstanding = 1,
+                ambiguous = false,
+            }
+        end
+
+        if _enabled.party_invite then
+            mod.account_name(inviter_account_id)
+        end
+    end
+
+    return func(self, party_id, invite_token, inviter_account_id)
+end)
+
+-- only a rejected join permission passes an answer code, and that attempt never shows a popup
+mod:hook_safe(CLASS.PartyImmateriumManager, "_decline_party_invite", function(self, party_id, invite_token, answer_code)
+    if answer_code ~= nil then
+        _finish_invite_attempt(self.wru_invite_attempts, party_id)
+    end
+end)
+
+-- in a mission the attempt ends in a notification, which keeps its vanilla text
+mod:hook_safe(CLASS.PartyImmateriumInviteNotificationHandler, "add_invite", function(self, party_id)
+    local party_manager = Managers.party_immaterium
+
+    if party_manager and party_manager._invite_notification_handler == self then
+        _finish_invite_attempt(party_manager.wru_invite_attempts, party_id)
+    end
+end)
+
+mod:hook_safe(CLASS.PartyImmateriumManager, "destroy", function(self)
+    self.wru_invite_attempts = nil
+    table.clear(_invite_bindings)
+end)
+
+-- vanilla's callback has mapped the new popup id to its party by now, and the popup isn't presented yet
+mod:hook_safe(CLASS.UIManager, "event_show_ui_popup", function(self, data)
+    if data.description_text ~= INVITE_DESCRIPTION or data.title_text ~= INVITE_TITLE then
+        return
+    end
+
+    local party_manager = Managers.party_immaterium
+    local invite_popups = party_manager and party_manager._invite_popups
+
+    if not invite_popups then
+        return
+    end
+
+    local active_popups = self._active_popups
+    local popup_id
+
+    for i = 1, #active_popups do
+        local popup = active_popups[i]
+
+        if popup.data == data then
+            popup_id = popup.id
+
+            break
+        end
+    end
+
+    if not popup_id then
+        return
+    end
+
+    local party_id
+
+    for id, invite_popup_id in pairs(invite_popups) do
+        if invite_popup_id == popup_id then
+            -- a popup id mapped to two parties can't be traced to its attempt
+            if party_id then
+                return
+            end
+
+            party_id = id
+        end
+    end
+
+    if not party_id then
+        return
+    end
+
+    local attempt = _finish_invite_attempt(party_manager.wru_invite_attempts, party_id)
+
+    if not attempt or attempt.ambiguous then
+        return
+    end
+
+    local params = data.description_text_params
+    local base_name = params and params.player_name
+    local account_id = attempt.account_id
+    local presence_manager = Managers.presence
+    local presences = presence_manager and presence_manager._presences_by_account_id
+    local presence = presences and presences[account_id]
+
+    if not base_name or not presence then
+        return
+    end
+
+    local character_name = presence:character_name()
+    local profile = presence:character_profile()
+    local character_level = profile and profile.current_level
+
+    -- the presence must still give vanilla's name, otherwise it changed after the popup was built
+    if _format_name_and_level(character_name, character_level) ~= base_name then
+        return
+    end
+
+    _prune_invite_bindings()
+
+    local binding = {
+        party_id = party_id,
+        popup_id = popup_id,
+        account_id = account_id,
+        character_name = character_name,
+        character_level = character_level,
+        base_name = base_name,
+        shown_name = base_name,
+        settings_revision = 0,
+        name_revision = 0,
+        has_account_name = false,
+    }
+
+    _invite_bindings[data] = binding
+
+    local name = _build_invite_name(binding)
+
+    binding.shown_name = name
+    params.player_name = name
+end)
+
+-- a name that resolved while the popup waited behind another one is applied before vanilla localizes it
+mod:hook(CLASS.ConstantElementPopupHandler, "_setup_presentation", function(func, self, data, ui_renderer)
+    local binding = _invite_bindings[data]
+
+    if binding then
+        if _is_invite_mapped(binding) then
+            local name = _build_invite_name(binding)
+
+            binding.shown_name = name
+            data.description_text_params.player_name = name
+        else
+            _invite_bindings[data] = nil
+        end
+    end
+
+    return func(self, data, ui_renderer)
+end)
+
+-- the visible popup takes later or refined names once its enter animation has sized the window
+mod:hook_safe(CLASS.ConstantElementPopupHandler, "update", function(self, dt, t, ui_renderer)
+    local popup = self._active_popup
+
+    if not popup then
+        return
+    end
+
+    local data = popup.data
+    local binding = _invite_bindings[data]
+
+    if not binding or self._on_enter_anim_id then
+        return
+    end
+
+    if binding.settings_revision == _settings_revision and binding.name_revision == _name_revision
+        and (binding.has_account_name or not _enabled.party_invite) then
+        return
+    end
+
+    local name = _build_invite_name(binding)
+
+    if name == binding.shown_name then
+        return
+    end
+
+    if popup.closing or not _is_invite_mapped(binding) then
+        _invite_bindings[data] = nil
+
+        return
+    end
+
+    binding.shown_name = name
+    data.description_text_params.player_name = name
+    _refresh_invite_description(self, data, ui_renderer)
+end)
+
 -- ##############################
 -- Cycle Style
 -- ##############################
@@ -1064,6 +1386,8 @@ mod.on_game_state_changed = function(status, state_name)
 
         -- the next session asks again for the names it shows
         _clear_queue()
+        -- pending invitation attempts stay, a permission check may still show their popup
+        _prune_invite_bindings()
 
         if mod.is_in_hub then
             mod.clear_account_names()
