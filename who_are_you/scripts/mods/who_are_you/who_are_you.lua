@@ -739,6 +739,48 @@ mod:hook_safe(CLASS.HudElementTeamPlayerPanelHub, "_set_rich_presence",  functio
     self.tl_modified = false
 end)
 
+local reset_player_panel_name = function(self)
+    self._current_player_name = nil
+    self.wru_modified = false
+    self.tl_modified = false
+    self.tl_level_text = nil
+    self.tl_level_base_text = nil
+end
+
+local refresh_player_name_prefix = function(func, self, player)
+    if not player or player.__deleted or not _enabled.team_panel then
+        return func(self, player)
+    end
+
+    local profile = player:profile()
+    local archetype = profile and profile.archetype
+    local character_id = profile and profile.character_id
+    local archetype_name = archetype and archetype.name
+    local player_slot = player.slot and player:slot()
+    local previous_prefix = self._player_name_prefix
+    local identity_changed = not self.wru_prefix_initialized or character_id ~= self.wru_prefix_character_id
+        or archetype_name ~= self.wru_prefix_archetype_name or player_slot ~= self.wru_prefix_slot
+
+    if identity_changed then
+        self.wru_prefix_initialized = true
+        self.wru_prefix_character_id = character_id
+        self.wru_prefix_archetype_name = archetype_name
+        self.wru_prefix_slot = player_slot
+        self._player_name_prefix = nil
+    end
+
+    func(self, player)
+
+    if identity_changed or self._player_name_prefix ~= previous_prefix then
+        reset_player_panel_name(self)
+    end
+end
+
+mod:hook(CLASS.HudElementPersonalPlayerPanel, "_update_player_name_prefix", refresh_player_name_prefix)
+mod:hook(CLASS.HudElementPersonalPlayerPanelHub, "_update_player_name_prefix", refresh_player_name_prefix)
+mod:hook(CLASS.HudElementTeamPlayerPanel, "_update_player_name_prefix", refresh_player_name_prefix)
+mod:hook(CLASS.HudElementTeamPlayerPanelHub, "_update_player_name_prefix", refresh_player_name_prefix)
+
 -- Combat Feed
 
 mod:hook_require("scripts/ui/constant_elements/elements/notification_feed/constant_element_notification_feed_settings", function (settings)
