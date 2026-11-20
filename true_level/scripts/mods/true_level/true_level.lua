@@ -1251,4 +1251,5 @@ end
 
 mod.on_disabled = function()
     _publish_havoc_assignment(true)
+    mod.restore_party_invite()
 end
