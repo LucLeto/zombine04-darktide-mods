@@ -1,15 +1,14 @@
 local mod = get_mod("true_level")
 local ref = "party_invite"
-local INVITE_TITLE = "loc_social_party_invite_received_header"
-local INVITE_DESCRIPTION = "loc_social_party_invite_received_description"
 local GROUP_FINDER_ACCOUNT_ID = "00000000-0000-0000-0000-000000000000"
 local math_min = math.min
 local pairs = pairs
 local string_find = string.find
 local type = type
 
-local _invite_bindings = setmetatable({}, { __mode = "k" })
-local _invite_params = {}
+local _party_popups = {}
+local _popup_bindings = setmetatable({}, { __mode = "k" })
+local _popup_params = {}
 local _presenting_data = nil
 local _popup_handler = nil
 
@@ -20,8 +19,8 @@ local _presence_entry = function(account_id)
     return presences and presences[account_id]
 end
 
-local _finish_invite_attempt = function(attempts, party_id)
-    local attempt = attempts and attempts[party_id]
+local _finish_popup_attempt = function(attempts, key)
+    local attempt = attempts and attempts[key]
 
     if not attempt then
         return nil
@@ -32,23 +31,23 @@ local _finish_invite_attempt = function(attempts, party_id)
     attempt.outstanding = outstanding
 
     if outstanding <= 0 then
-        attempts[party_id] = nil
+        attempts[key] = nil
     end
 
     return attempt
 end
 
-local _is_invite_mapped = function(binding)
+local _is_popup_mapped = function(binding)
     local party_manager = Managers.party_immaterium
-    local invite_popups = party_manager and party_manager._invite_popups
+    local popups = party_manager and party_manager[binding.popups]
 
-    return invite_popups ~= nil and invite_popups[binding.party_id] == binding.popup_id
+    return popups ~= nil and popups[binding.key] == binding.popup_id
 end
 
-local _prune_invite_bindings = function()
-    for data, binding in pairs(_invite_bindings) do
-        if not _is_invite_mapped(binding) then
-            _invite_bindings[data] = nil
+local _prune_popup_bindings = function()
+    for data, binding in pairs(_popup_bindings) do
+        if not _is_popup_mapped(binding) then
+            _popup_bindings[data] = nil
         end
     end
 end
@@ -60,8 +59,9 @@ local _set_rendered_state = function(binding, true_levels, enabled)
 end
 
 local _decorate = function(data, binding, text)
+    local reference = binding.ref
     local true_levels = mod.get_true_levels(binding.character_id)
-    local enabled = mod.is_enabled_feature(ref)
+    local enabled = mod.is_enabled_feature(reference)
 
     _set_rendered_state(binding, true_levels, enabled)
 
@@ -72,22 +72,22 @@ local _decorate = function(data, binding, text)
         return text
     end
 
-    local name = mod.replace_level(player_name, true_levels, ref)
+    local name = mod.replace_level(player_name, true_levels, reference)
 
     if name == player_name then
         return text
     end
 
-    table.clear(_invite_params)
+    table.clear(_popup_params)
 
     for key, value in pairs(params) do
-        _invite_params[key] = value
+        _popup_params[key] = value
     end
 
-    _invite_params.player_name = name
-    mod.debug.timing("ui_rendered", binding.character_id, ref)
+    _popup_params.player_name = name
+    mod.debug.timing("ui_rendered", binding.character_id, reference)
 
-    return Localize(data.description_text, true, _invite_params)
+    return Localize(data.description_text, true, _popup_params)
 end
 
 local _refresh_description = function(handler, data, ui_renderer)
@@ -119,48 +119,67 @@ local _refresh_description = function(handler, data, ui_renderer)
     handler:_force_update_scenegraph()
 end
 
-mod:hook(CLASS.PartyImmateriumManager, "_handle_immaterium_invite", function(func, self, party_id, invite_token, inviter_account_id)
+mod.register_party_popup = function(description_text, popup)
+    _party_popups[description_text] = popup
+end
+
+mod.track_party_popup = function(func, manager, attempts_key, key, account_id, ...)
     local attempt = nil
 
-    if party_id and inviter_account_id and inviter_account_id ~= GROUP_FINDER_ACCOUNT_ID then
-        local attempts = self.tl_invite_attempts
+    if key and account_id then
+        local attempts = manager[attempts_key]
 
         if not attempts then
             attempts = {}
-            self.tl_invite_attempts = attempts
+            manager[attempts_key] = attempts
         end
 
-        local presence = _presence_entry(inviter_account_id)
+        local presence = _presence_entry(account_id)
 
-        attempt = attempts[party_id]
+        attempt = attempts[key]
 
         if attempt then
             attempt.outstanding = attempt.outstanding + 1
 
-            if attempt.account_id ~= inviter_account_id or attempt.presence ~= presence then
+            if attempt.account_id ~= account_id or attempt.presence ~= presence then
                 attempt.ambiguous = true
             end
         else
             attempt = {
-                account_id = inviter_account_id,
+                account_id = account_id,
                 presence = presence,
                 outstanding = 1,
                 ambiguous = false,
             }
-            attempts[party_id] = attempt
+            attempts[key] = attempt
         end
     end
 
-    func(self, party_id, invite_token, inviter_account_id)
+    func(manager, ...)
 
     if attempt and not attempt.presence then
-        attempt.presence = _presence_entry(inviter_account_id)
+        attempt.presence = _presence_entry(account_id)
     end
+end
+
+mod.register_party_popup("loc_social_party_invite_received_description", {
+    ref = ref,
+    title_text = "loc_social_party_invite_received_header",
+    popups = "_invite_popups",
+    attempts = "tl_invite_attempts",
+})
+
+mod:hook(CLASS.PartyImmateriumManager, "_handle_immaterium_invite", function(func, self, party_id, invite_token, inviter_account_id)
+    if inviter_account_id == GROUP_FINDER_ACCOUNT_ID then
+        return func(self, party_id, invite_token, inviter_account_id)
+    end
+
+    mod.track_party_popup(func, self, "tl_invite_attempts", party_id, inviter_account_id, party_id, invite_token, inviter_account_id)
 end)
 
 mod:hook_safe(CLASS.PartyImmateriumManager, "_decline_party_invite", function(self, party_id, invite_token, answer_code)
     if answer_code ~= nil then
-        _finish_invite_attempt(self.tl_invite_attempts, party_id)
+        _finish_popup_attempt(self.tl_invite_attempts, party_id)
     end
 end)
 
@@ -168,24 +187,29 @@ mod:hook_safe(CLASS.PartyImmateriumInviteNotificationHandler, "add_invite", func
     local party_manager = Managers.party_immaterium
 
     if party_manager and party_manager._invite_notification_handler == self then
-        _finish_invite_attempt(party_manager.tl_invite_attempts, party_id)
+        _finish_popup_attempt(party_manager.tl_invite_attempts, party_id)
     end
 end)
 
 mod:hook_safe(CLASS.PartyImmateriumManager, "destroy", function(self)
-    self.tl_invite_attempts = nil
-    table.clear(_invite_bindings)
+    for _, popup in pairs(_party_popups) do
+        self[popup.attempts] = nil
+    end
+
+    table.clear(_popup_bindings)
 end)
 
 mod:hook_safe(CLASS.UIManager, "event_show_ui_popup", function(self, data)
-    if data.description_text ~= INVITE_DESCRIPTION or data.title_text ~= INVITE_TITLE then
+    local popup = _party_popups[data.description_text]
+
+    if not popup or data.title_text ~= popup.title_text then
         return
     end
 
     local party_manager = Managers.party_immaterium
-    local invite_popups = party_manager and party_manager._invite_popups
+    local popups = party_manager and party_manager[popup.popups]
 
-    if not invite_popups then
+    if not popups then
         return
     end
 
@@ -193,10 +217,10 @@ mod:hook_safe(CLASS.UIManager, "event_show_ui_popup", function(self, data)
     local popup_id = nil
 
     for i = 1, #active_popups do
-        local popup = active_popups[i]
+        local active_popup = active_popups[i]
 
-        if popup.data == data then
-            popup_id = popup.id
+        if active_popup.data == data then
+            popup_id = active_popup.id
 
             break
         end
@@ -206,23 +230,23 @@ mod:hook_safe(CLASS.UIManager, "event_show_ui_popup", function(self, data)
         return
     end
 
-    local party_id = nil
+    local key = nil
 
-    for id, invite_popup_id in pairs(invite_popups) do
-        if invite_popup_id == popup_id then
-            if party_id then
+    for id, mapped_popup_id in pairs(popups) do
+        if mapped_popup_id == popup_id then
+            if key then
                 return
             end
 
-            party_id = id
+            key = id
         end
     end
 
-    if not party_id then
+    if not key then
         return
     end
 
-    local attempt = _finish_invite_attempt(party_manager.tl_invite_attempts, party_id)
+    local attempt = _finish_popup_attempt(party_manager[popup.attempts], key)
     local presence = attempt and not attempt.ambiguous and attempt.presence
 
     if not presence then
@@ -235,11 +259,13 @@ mod:hook_safe(CLASS.UIManager, "event_show_ui_popup", function(self, data)
         return
     end
 
-    _prune_invite_bindings()
+    _prune_popup_bindings()
 
-    _invite_bindings[data] = {
-        party_id = party_id,
+    _popup_bindings[data] = {
+        popups = popup.popups,
+        key = key,
         popup_id = popup_id,
+        ref = popup.ref,
         character_id = character_id,
         true_levels = nil,
         havoc_rank = nil,
@@ -248,10 +274,10 @@ mod:hook_safe(CLASS.UIManager, "event_show_ui_popup", function(self, data)
 end)
 
 mod:hook(CLASS.ConstantElementPopupHandler, "_setup_presentation", function(func, self, data, ui_renderer)
-    local binding = _invite_bindings[data]
+    local binding = _popup_bindings[data]
 
-    if binding and not _is_invite_mapped(binding) then
-        _invite_bindings[data] = nil
+    if binding and not _is_popup_mapped(binding) then
+        _popup_bindings[data] = nil
         binding = nil
     end
 
@@ -263,7 +289,7 @@ mod:hook(CLASS.ConstantElementPopupHandler, "_setup_presentation", function(func
     _popup_handler = self
     func(self, data, ui_renderer)
     _presenting_data = nil
-    mod.synced(ref)
+    mod.synced(binding.ref)
 end)
 
 mod:hook(CLASS.ConstantElementPopupHandler, "_set_description_text", function(func, self, text)
@@ -275,13 +301,13 @@ mod:hook(CLASS.ConstantElementPopupHandler, "_set_description_text", function(fu
         data = popup and popup.data
     end
 
-    local binding = data and _invite_bindings[data]
+    local binding = data and _popup_bindings[data]
 
     if binding and type(text) == "string" then
-        if _is_invite_mapped(binding) then
+        if _is_popup_mapped(binding) then
             text = _decorate(data, binding, text)
         else
-            _invite_bindings[data] = nil
+            _popup_bindings[data] = nil
         end
     end
 
@@ -296,39 +322,40 @@ mod:hook_safe(CLASS.ConstantElementPopupHandler, "update", function(self, dt, t,
     end
 
     local data = popup.data
-    local binding = _invite_bindings[data]
+    local binding = _popup_bindings[data]
 
     if not binding or self._on_enter_anim_id then
         return
     end
 
+    local reference = binding.ref
     local true_levels = mod.get_true_levels(binding.character_id)
-    local enabled = mod.is_enabled_feature(ref)
+    local enabled = mod.is_enabled_feature(reference)
 
     if true_levels == binding.true_levels and enabled == binding.enabled
         and (not true_levels or true_levels.havoc_rank == binding.havoc_rank)
-        and not mod.should_replace(ref) then
+        and not mod.should_replace(reference) then
         return
     end
 
-    if popup.closing or not _is_invite_mapped(binding) then
-        _invite_bindings[data] = nil
+    if popup.closing or not _is_popup_mapped(binding) then
+        _popup_bindings[data] = nil
 
         return
     end
 
     _set_rendered_state(binding, true_levels, enabled)
     _refresh_description(self, data, ui_renderer)
-    mod.synced(ref)
+    mod.synced(reference)
 end)
 
 mod.restore_party_invite = function()
     local handler = _popup_handler
     local popup = handler and handler._active_popup
     local data = popup and popup.data
-    local binding = data and _invite_bindings[data]
+    local binding = data and _popup_bindings[data]
 
-    if binding and not popup.closing and not handler._on_enter_anim_id and _is_invite_mapped(binding) then
+    if binding and not popup.closing and not handler._on_enter_anim_id and _is_popup_mapped(binding) then
         _refresh_description(handler, data, handler:ui_renderer())
     end
 end
