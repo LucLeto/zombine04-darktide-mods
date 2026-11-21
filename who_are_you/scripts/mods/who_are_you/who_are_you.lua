@@ -1004,12 +1004,26 @@ mod:hook_safe(CLASS.GroupFinderView, "_populate_preview_grid", function(self)
     end
 end)
 
--- Strike Team Invitation
+-- Strike Team Invitation and Join Request
 
-local INVITE_TITLE = "loc_social_party_invite_received_header"
-local INVITE_DESCRIPTION = "loc_social_party_invite_received_description"
 local NAME_AND_LEVEL_FORMAT = "loc_social_menu_character_name_format"
 local GROUP_FINDER_ACCOUNT_ID = "00000000-0000-0000-0000-000000000000"
+
+-- description key -> where vanilla keeps the popup id and which target names it
+local PARTY_POPUPS = {
+    loc_social_party_invite_received_description = {
+        ref = "party_invite",
+        title_text = "loc_social_party_invite_received_header",
+        popups = "_invite_popups",
+        attempts = "wru_invite_attempts",
+    },
+    loc_party_request_to_join_description = {
+        ref = "party_join_request",
+        title_text = "loc_party_request_to_join_header",
+        popups = "_request_to_join_popups",
+        attempts = "wru_join_request_attempts",
+    },
+}
 
 -- reused by every name-and-level format, Localize reads it right away
 local _name_and_level_params = {
@@ -1035,9 +1049,36 @@ local _format_name_and_level = function(name, level)
     return Localize(NAME_AND_LEVEL_FORMAT, true, params)
 end
 
+-- an invitation is keyed by party, a join request by joiner
+local _start_invite_attempt = function(party_manager, attempts_key, key, account_id)
+    local attempts = party_manager[attempts_key]
+
+    if not attempts then
+        attempts = {}
+        party_manager[attempts_key] = attempts
+    end
+
+    local attempt = attempts[key]
+
+    if attempt then
+        attempt.outstanding = attempt.outstanding + 1
+
+        -- popups of one party carry no inviter, so pending inviters can't be told apart
+        if attempt.account_id ~= account_id then
+            attempt.ambiguous = true
+        end
+    else
+        attempts[key] = {
+            account_id = account_id,
+            outstanding = 1,
+            ambiguous = false,
+        }
+    end
+end
+
 -- an attempt ends in its popup, its in-mission notification or its rejected join permission
-local _finish_invite_attempt = function(attempts, party_id)
-    local attempt = attempts and attempts[party_id]
+local _finish_invite_attempt = function(attempts, key)
+    local attempt = attempts and attempts[key]
 
     if not attempt then
         return nil
@@ -1048,18 +1089,18 @@ local _finish_invite_attempt = function(attempts, party_id)
     attempt.outstanding = outstanding
 
     if outstanding <= 0 then
-        attempts[party_id] = nil
+        attempts[key] = nil
     end
 
     return attempt
 end
 
--- the popup is still the one vanilla shows for its party
+-- the popup is still the one vanilla shows for its party or joiner
 local _is_invite_mapped = function(binding)
     local party_manager = Managers.party_immaterium
-    local invite_popups = party_manager and party_manager._invite_popups
+    local popups = party_manager and party_manager[binding.popups]
 
-    return invite_popups ~= nil and invite_popups[binding.party_id] == binding.popup_id
+    return popups ~= nil and popups[binding.key] == binding.popup_id
 end
 
 local _prune_invite_bindings = function()
@@ -1076,7 +1117,9 @@ local _build_invite_name = function(binding)
     binding.name_revision = _name_revision
     binding.has_account_name = false
 
-    if not _enabled.party_invite then
+    local ref = binding.ref
+
+    if not _enabled[ref] then
         return binding.base_name
     end
 
@@ -1089,7 +1132,7 @@ local _build_invite_name = function(binding)
 
     binding.has_account_name = true
 
-    return _format_name_and_level(modify_character_name(binding.character_name, account_name, account_id, "party_invite"), binding.character_level)
+    return _format_name_and_level(modify_character_name(binding.character_name, account_name, account_id, ref), binding.character_level)
 end
 
 -- only the enter animation sizes the window, so a changed description gets the size of that animation's last frame
@@ -1118,29 +1161,7 @@ end
 -- recorded before vanilla runs, since an already resolved presence shows the popup right away
 mod:hook(CLASS.PartyImmateriumManager, "_handle_immaterium_invite", function(func, self, party_id, invite_token, inviter_account_id)
     if party_id and inviter_account_id and inviter_account_id ~= GROUP_FINDER_ACCOUNT_ID then
-        local attempts = self.wru_invite_attempts
-
-        if not attempts then
-            attempts = {}
-            self.wru_invite_attempts = attempts
-        end
-
-        local attempt = attempts[party_id]
-
-        if attempt then
-            attempt.outstanding = attempt.outstanding + 1
-
-            -- popups of one party carry no inviter, so pending inviters can't be told apart
-            if attempt.account_id ~= inviter_account_id then
-                attempt.ambiguous = true
-            end
-        else
-            attempts[party_id] = {
-                account_id = inviter_account_id,
-                outstanding = 1,
-                ambiguous = false,
-            }
-        end
+        _start_invite_attempt(self, "wru_invite_attempts", party_id, inviter_account_id)
 
         if _enabled.party_invite then
             mod.account_name(inviter_account_id)
@@ -1148,6 +1169,19 @@ mod:hook(CLASS.PartyImmateriumManager, "_handle_immaterium_invite", function(fun
     end
 
     return func(self, party_id, invite_token, inviter_account_id)
+end)
+
+-- outside missions a join request always shows a popup, which may show inside this call
+mod:hook(CLASS.PartyImmateriumManager, "_request_to_join_popup", function(func, self, joiner_account_id)
+    if joiner_account_id then
+        _start_invite_attempt(self, "wru_join_request_attempts", joiner_account_id, joiner_account_id)
+
+        if _enabled.party_join_request then
+            mod.account_name(joiner_account_id)
+        end
+    end
+
+    return func(self, joiner_account_id)
 end)
 
 -- only a rejected join permission passes an answer code, and that attempt never shows a popup
@@ -1167,20 +1201,25 @@ mod:hook_safe(CLASS.PartyImmateriumInviteNotificationHandler, "add_invite", func
 end)
 
 mod:hook_safe(CLASS.PartyImmateriumManager, "destroy", function(self)
-    self.wru_invite_attempts = nil
+    for _, popup in pairs(PARTY_POPUPS) do
+        self[popup.attempts] = nil
+    end
+
     table.clear(_invite_bindings)
 end)
 
--- vanilla's callback has mapped the new popup id to its party by now, and the popup isn't presented yet
+-- vanilla's callback has mapped the new popup id to its party or joiner by now, and the popup isn't presented yet
 mod:hook_safe(CLASS.UIManager, "event_show_ui_popup", function(self, data)
-    if data.description_text ~= INVITE_DESCRIPTION or data.title_text ~= INVITE_TITLE then
+    local party_popup = PARTY_POPUPS[data.description_text]
+
+    if not party_popup or data.title_text ~= party_popup.title_text then
         return
     end
 
     local party_manager = Managers.party_immaterium
-    local invite_popups = party_manager and party_manager._invite_popups
+    local popups = party_manager and party_manager[party_popup.popups]
 
-    if not invite_popups then
+    if not popups then
         return
     end
 
@@ -1201,24 +1240,24 @@ mod:hook_safe(CLASS.UIManager, "event_show_ui_popup", function(self, data)
         return
     end
 
-    local party_id
+    local key
 
-    for id, invite_popup_id in pairs(invite_popups) do
-        if invite_popup_id == popup_id then
-            -- a popup id mapped to two parties can't be traced to its attempt
-            if party_id then
+    for id, mapped_popup_id in pairs(popups) do
+        if mapped_popup_id == popup_id then
+            -- a popup id mapped twice can't be traced to its attempt
+            if key then
                 return
             end
 
-            party_id = id
+            key = id
         end
     end
 
-    if not party_id then
+    if not key then
         return
     end
 
-    local attempt = _finish_invite_attempt(party_manager.wru_invite_attempts, party_id)
+    local attempt = _finish_invite_attempt(party_manager[party_popup.attempts], key)
 
     if not attempt or attempt.ambiguous then
         return
@@ -1247,8 +1286,10 @@ mod:hook_safe(CLASS.UIManager, "event_show_ui_popup", function(self, data)
     _prune_invite_bindings()
 
     local binding = {
-        party_id = party_id,
+        popups = party_popup.popups,
+        key = key,
         popup_id = popup_id,
+        ref = party_popup.ref,
         account_id = account_id,
         character_name = character_name,
         character_level = character_level,
@@ -1301,7 +1342,7 @@ mod:hook_safe(CLASS.ConstantElementPopupHandler, "update", function(self, dt, t,
     end
 
     if binding.settings_revision == _settings_revision and binding.name_revision == _name_revision
-        and (binding.has_account_name or not _enabled.party_invite) then
+        and (binding.has_account_name or not _enabled[binding.ref]) then
         return
     end
 

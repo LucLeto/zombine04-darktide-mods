@@ -10,6 +10,7 @@ mod.modified_elements = {
     "_team_panel",
     "_group_finder",
     "_party_invite",
+    "_party_join_request",
 }
 
 mod.sub_name_options = {
@@ -206,6 +207,9 @@ local loc = {
     },
     enable_party_invite = {
         en = "Strike Team invitations",
+    },
+    enable_party_join_request = {
+        en = Localize("loc_party_request_to_join_header"),
     },
     sub_name_settings = {
         en = "Sub name settings",
