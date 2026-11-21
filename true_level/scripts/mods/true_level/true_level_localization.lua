@@ -11,6 +11,7 @@ mod._elements = {
     "social_menu",
     "group_finder",
     "party_invite",
+    "party_join_request",
 }
 
 mod._styles = {
@@ -386,6 +387,9 @@ local loc = {
     },
     party_invite = {
         en = Localize("loc_social_party_invite_received_header"),
+    },
+    party_join_request = {
+        en = Localize("loc_party_request_to_join_header"),
     },
     debug_mode = {
         en = "Debug",
