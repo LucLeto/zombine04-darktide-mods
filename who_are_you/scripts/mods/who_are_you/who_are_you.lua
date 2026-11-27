@@ -598,7 +598,9 @@ mod:hook_safe(CLASS.HudElementWorldMarkers, "_calculate_markers", function(self,
                     return
                 end
 
-                if marker.wru_style ~= current_style or not marker.wru_modified or marker.wru_revision ~= name_revision then
+                -- a leaving player is deleted a few frames before its nameplate is removed
+                if (marker.wru_style ~= current_style or not marker.wru_modified or marker.wru_revision ~= name_revision)
+                    and not marker.data.__deleted then
                     local player = marker.data
                     local profile = player:profile()
                     local content = marker.widget.content
