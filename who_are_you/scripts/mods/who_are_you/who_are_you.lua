@@ -18,6 +18,7 @@ local pairs = pairs
 local string_find = string.find
 local string_format = string.format
 local string_gsub = string.gsub
+local string_sub = string.sub
 local ICONS = {
     steam = "\xEE\x81\xAB",
     xbox = "\xEE\x81\xAC",
@@ -146,13 +147,11 @@ local _clear_queue = function()
     _next_check = math_huge
 end
 
--- checks the name itself; the platform icon may still be unresolved
+-- checks the name itself: vanilla builds "<icon> <name>", and the icon may still be unresolved
+-- or wrapped in other mods' markup, so a placeholder name is recognized by the end of the string
 mod.is_unknown = function(account_name)
-    for i = 1, NUM_ICONS do
-        account_name = string_gsub(account_name, ICON_PREFIXES[i], "")
-    end
-
     return account_name == "N/A" or account_name == "[unknown]"
+        or string_sub(account_name, -4) == " N/A" or string_sub(account_name, -10) == " [unknown]"
 end
 
 mod.account_name = function(id)
@@ -226,7 +225,8 @@ end
 local _is_tentative = function(player_info)
     local icon = player_info:platform_icon()
 
-    if not icon or icon == ICONS.unknown then
+    -- plain find, since other mods may wrap the icon in markup
+    if not icon or string_find(icon, ICONS.unknown, 1, true) then
         return true
     end
 
