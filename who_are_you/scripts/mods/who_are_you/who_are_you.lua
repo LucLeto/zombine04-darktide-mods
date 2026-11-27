@@ -3,8 +3,8 @@ local mod = get_mod("who_are_you")
 mod._info = {
     title = "Who Are You",
     author = "Zombine",
-    date = "2026/11/21",
-    version = "3.10.0",
+    date = "2026/11/27",
+    version = "3.10.1",
 }
 mod:info("Version " .. mod._info.version)
 
